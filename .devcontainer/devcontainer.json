@@ -1,0 +1,60 @@
+// GitHub Codespaces: the whole platform in a browser tab, nothing installed
+// locally. Free personal quota is 120 core-hours/month:
+//   2-core / 8 GB  → Compose + ELK (`make up`)          ~60 h/month
+//   4-core / 16 GB → kind + ECK + Argo CD                ~30 h/month
+// Stop the codespace when done; idle ones auto-stop after 30 minutes.
+{
+  "name": "zombie-vocab-platform",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "8gb"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "version": "1.37.1",
+      "helm": "none",
+      "minikube": "none"
+    },
+    "ghcr.io/devcontainers/features/terraform:1": {
+      "version": "1.17.0"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  // The backend repo is private; this asks for read access to it when the
+  // codespace is created, so post-create can clone it next to this repo.
+  "customizations": {
+    "codespaces": {
+      "repositories": {
+        "dandoughnut/zombie_vocab_backend": {
+          "permissions": {
+            "contents": "read"
+          }
+        }
+      }
+    },
+    "vscode": {
+      "extensions": [
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "hashicorp.terraform",
+        "redhat.ansible",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "containerEnv": {
+    // Backend branch to build; switch to a feature branch to try it out.
+    "BACKEND_REF": "main"
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "forwardPorts": [8000, 5601, 8080],
+  "portsAttributes": {
+    "8000": { "label": "API (/docs)", "onAutoForward": "notify" },
+    "5601": { "label": "Kibana", "onAutoForward": "openBrowser" },
+    "8080": { "label": "Argo CD", "onAutoForward": "notify", "protocol": "https" }
+  }
+}

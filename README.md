@@ -47,13 +47,19 @@ CronJob-ready sweeps) live in the backend repo. See
 [docs/interview-stories.md](docs/interview-stories.md) for the reasoning behind
 each decision.
 
-## Quick start
+## Quick start (GitHub Codespaces, nothing to install)
 
-Prereqs: Docker (Docker Desktop or OrbStack, ~6 GB RAM for the Elastic
-stack) and a sibling checkout of the backend at `../zombie_vocab_backend`.
+**Code → Codespaces → Create codespace on main.** Approve the read access
+to `zombie_vocab_backend` when prompted. The devcontainer installs Docker,
+kind, kubectl, Terraform, Ansible and kubeconform, and clones the backend next
+to this repo. Pick **2-core** for Compose + ELK and **4-core** for Kubernetes.
+Ports 8000 (API), 5601 (Kibana) and 8080 (Argo CD) open as browser tabs.
+Stop the codespace when done; it fits inside the free monthly quota.
+
+Running locally instead needs Docker (~6 GB RAM for the Elastic stack) and the
+backend checked out at `../zombie_vocab_backend`.
 
 ```bash
-cp .env.example .env
 make up      # API :8000, Kibana :5601
 make load    # mixed 200/401/404 traffic
 make sweep   # run the reconcile + prune jobs once
