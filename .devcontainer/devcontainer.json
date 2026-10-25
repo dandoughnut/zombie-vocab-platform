@@ -1,6 +1,6 @@
 // GitHub Codespaces: the whole platform in a browser tab, nothing installed
 // locally. Free personal quota is 120 core-hours/month:
-//   2-core / 8 GB  → Compose + ELK (`make up`)          ~60 h/month
+//   2-core / 8 GB  → Compose: ELK + Prometheus/Grafana   ~60 h/month
 //   4-core / 16 GB → kind + ECK + Argo CD                ~30 h/month
 // Stop the codespace when done; idle ones auto-stop after 30 minutes.
 {
@@ -14,7 +14,7 @@
     "ghcr.io/devcontainers/features/docker-in-docker:2": {},
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
       "version": "1.37.1",
-      "helm": "none",
+      "helm": "4.3.1",
       "minikube": "none"
     },
     "ghcr.io/devcontainers/features/terraform:1": {
@@ -51,10 +51,13 @@
     "BACKEND_REF": "main"
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
-  "forwardPorts": [8000, 5601, 8080],
+  "forwardPorts": [8000, 3000, 5601, 9090, 9093, 8080],
   "portsAttributes": {
     "8000": { "label": "API (/docs)", "onAutoForward": "notify" },
-    "5601": { "label": "Kibana", "onAutoForward": "openBrowser" },
+    "3000": { "label": "Grafana", "onAutoForward": "openBrowser" },
+    "5601": { "label": "Kibana", "onAutoForward": "notify" },
+    "9090": { "label": "Prometheus", "onAutoForward": "notify" },
+    "9093": { "label": "Alertmanager", "onAutoForward": "silent" },
     "8080": { "label": "Argo CD", "onAutoForward": "notify", "protocol": "https" }
   }
 }

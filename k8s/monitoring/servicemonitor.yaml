@@ -1,0 +1,22 @@
+# Tells the Prometheus Operator to scrape every pod behind the API Service.
+# The scrape authenticates with the same bearer token the app checks on
+# /metrics. `job` comes out as "zombie-vocab-api" (the Service name), which is
+# what the alert rules select on, the same as under Compose.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zombie-vocab-api
+  namespace: zombie-vocab
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zombie-vocab-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      authorization:
+        type: Bearer
+        credentials:
+          name: zombie-vocab-metrics-scrape
+          key: token

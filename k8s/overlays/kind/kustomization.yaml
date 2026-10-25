@@ -17,6 +17,8 @@ secretGenerator:
   - name: zombie-vocab-api-secrets
     literals:
       - DATABASE_URL=postgresql+asyncpg://zombie:zombie@postgres:5432/zombie
+      # Matches the scrape Secret in k8s/monitoring.
+      - METRICS_TOKEN=local-metrics-token
     options:
       annotations:
         argocd.argoproj.io/sync-wave: "-1"

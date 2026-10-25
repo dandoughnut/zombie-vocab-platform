@@ -1,13 +1,19 @@
-# Local platform: the real Zombie Vocab API on plain Postgres, with its logs
-# shipped to a single-node Elastic Stack. Nothing here runs in the cloud.
+# Local platform: the real Zombie Vocab API on plain Postgres, with both
+# observability stacks. Nothing here runs in the cloud.
 #
-#   make up        # api + postgres + elasticsearch + kibana + filebeat
-#   make load      # generate traffic so Kibana has something to show
-#   open http://localhost:5601
+#   make up     # everything below
+#   make demo   # 30 days of synthetic users, runs, funnel events, feedback
+#   make load   # live traffic (200/401/404) for the request dashboards
 #
-# Security is disabled on Elasticsearch/Kibana because this stack only ever
-# binds to localhost. The Kubernetes path (k8s/observability) uses ECK, which
-# turns TLS and auth on by default.
+#   API :8000   Kibana :5601   Grafana :3000   Prometheus :9090   Alertmanager :9093
+#
+# Logs:    api ──stdout──▶ Filebeat ──▶ Logstash (scrub) ──▶ Elasticsearch ──▶ Kibana / Grafana
+# Search:  Postgres feedback ──JDBC──▶ Logstash (redact emails) ──▶ Elasticsearch
+# Metrics: api /metrics ◀──scrape── Prometheus ──▶ Alertmanager / Grafana
+# Product: Postgres metrics views ◀── Grafana (read-only role)
+#
+# Security is off on Elasticsearch/Kibana because this stack only binds to
+# localhost. The Kubernetes path (k8s/observability) uses ECK: TLS and auth on.
 
 name: zombie-vocab-platform
 
@@ -22,10 +28,15 @@ x-api: &api
     # Multi-replica posture even locally: sweeps run as one-shot jobs (below),
     # not inside the web process.
     RUN_BACKGROUND_LOOPS: "false"
+    # Local-only scrape token; must match observability/prometheus/metrics-token.
+    METRICS_TOKEN: local-metrics-token
     SUPABASE_URL: ${SUPABASE_URL:-}
     SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-}
 
+x-elastic-version: &elastic-version ${ELASTIC_VERSION:-9.5.5}
+
 services:
+  # --- the app ---------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: zv-postgres
@@ -42,7 +53,7 @@ services:
       timeout: 3s
       retries: 20
 
-  # One migrator, run to completion before any API container starts — the
+  # One migrator, run to completion before any API container starts: the
   # same contract the Kubernetes migrate Job enforces.
   migrate:
     <<: *api
@@ -52,6 +63,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # The dashboards' least-privilege role (backend scripts/metrics_readonly_role.sql).
+  metrics-role:
+    image: postgres:16-alpine
+    container_name: zv-metrics-role
+    restart: "no"
+    environment:
+      PGPASSWORD: zombie
+    volumes:
+      - ${BACKEND_DIR:-../zombie_vocab_backend}/scripts:/sql:ro
+    command: ["psql", "-h", "postgres", "-U", "zombie", "-d", "zombie", "-v", "ON_ERROR_STOP=1",
+              "-v", "password='metrics'", "-f", "/sql/metrics_readonly_role.sql"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   api:
     <<: *api
@@ -84,6 +110,18 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Synthetic history for the product dashboards: `make demo`.
+  demo-data:
+    <<: *api
+    container_name: zv-demo-data
+    command: ["python", "scripts/seed_demo_activity.py", "--allow-postgres"]
+    restart: "no"
+    profiles: ["demo"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # --- Elastic Stack: logs and search -------------------------------------------
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-9.5.5}
     container_name: zv-elasticsearch
@@ -102,6 +140,60 @@ services:
       timeout: 10s
       retries: 40
 
+  # Index templates (retention, mappings) before anything writes.
+  elasticsearch-setup:
+    image: curlimages/curl:8.11.1
+    container_name: zv-elasticsearch-setup
+    restart: "no"
+    volumes:
+      - ./observability/elasticsearch:/setup:ro
+    entrypoint: ["sh", "/setup/setup.sh"]
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  logstash:
+    build:
+      context: ./observability/logstash
+      args:
+        ELASTIC_VERSION: *elastic-version
+    image: zombie-vocab-logstash:dev
+    container_name: zv-logstash
+    restart: unless-stopped
+    environment:
+      LS_JAVA_OPTS: -Xms256m -Xmx512m
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      # Key for pseudonymising user ids. A real deploy injects it as a secret
+      # and never logs it; rotating it unlinks old and new hashes by design.
+      PSEUDONYM_KEY: local-pseudonym-key
+      FEEDBACK_JDBC_URL: jdbc:postgresql://postgres:5432/zombie
+      FEEDBACK_DB_USER: zombie
+      FEEDBACK_DB_PASSWORD: zombie
+      # Don't ship Logstash's own monitoring to Elasticsearch.
+      XPACK_MONITORING_ENABLED: "false"
+    volumes:
+      - logstash-data:/usr/share/logstash/data
+    depends_on:
+      elasticsearch-setup:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:${ELASTIC_VERSION:-9.5.5}
+    container_name: zv-filebeat
+    restart: unless-stopped
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./observability/compose/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - logstash
+
   kibana:
     image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-9.5.5}
     container_name: zv-kibana
@@ -119,7 +211,7 @@ services:
       timeout: 10s
       retries: 60
 
-  # Creates the data view and imports any committed dashboards (dashboards as code).
+  # Data views + saved searches from git (dashboards as code).
   kibana-setup:
     image: curlimages/curl:8.11.1
     container_name: zv-kibana-setup
@@ -133,20 +225,56 @@ services:
       kibana:
         condition: service_healthy
 
-  filebeat:
-    image: docker.elastic.co/beats/filebeat:${ELASTIC_VERSION:-9.5.5}
-    container_name: zv-filebeat
+  # --- Prometheus + Grafana: metrics, alerts, product dashboards -------------
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    container_name: zv-prometheus
     restart: unless-stopped
-    user: root
-    command: ["filebeat", "-e", "--strict.perms=false"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
     volumes:
-      - ./observability/compose/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules.generated.yml:/etc/prometheus/rules.generated.yml:ro
+      - ./observability/prometheus/metrics-token:/etc/prometheus/metrics-token:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
     depends_on:
-      elasticsearch:
-        condition: service_healthy
+      - api
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    container_name: zv-alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:9093:9093"
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    container_name: zv-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Local demo: open dashboards without logging in, read-only.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/api-red.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Shared with the Kubernetes Grafana (k8s/monitoring).
+      - ./k8s/monitoring/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - metrics-role
 
 volumes:
   pgdata:
   esdata:
+  logstash-data:
+  promdata:

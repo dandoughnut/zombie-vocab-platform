@@ -1,0 +1,9 @@
+# Two independent pipelines: a slow or failing JDBC poll never backs up the
+# live log stream, and each can be reloaded on its own.
+- pipeline.id: app-logs
+  path.config: /usr/share/logstash/pipeline/app-logs.conf
+  # Survives a Logstash restart without dropping in-flight log lines.
+  queue.type: persisted
+- pipeline.id: feedback
+  path.config: /usr/share/logstash/pipeline/feedback.conf
+  pipeline.workers: 1

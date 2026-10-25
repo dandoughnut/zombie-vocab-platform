@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: zombie-vocab
+    folder: Zombie Vocab
+    type: file
+    # Dashboards are files in git; edits made in the UI are not saved back.
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

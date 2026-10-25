@@ -1,22 +1,20 @@
 #!/bin/sh
-# Idempotent Kibana bootstrap: a data view over the Filebeat data stream, then
-# every *.ndjson in this directory imported as saved objects. Build dashboards
-# in the UI, export them (Stack Management → Saved objects → Export) into
-# observability/kibana/, commit, and every fresh stack comes up with them.
+# Idempotent Kibana bootstrap: imports every *.ndjson in this directory as
+# saved objects (data views, saved searches, and any dashboards you export
+# from the UI into this folder). Dashboards as code: commit the export, and
+# every fresh stack comes up with it.
 set -eu
 
 KIBANA_URL="${KIBANA_URL:-http://localhost:5601}"
 DIR="$(dirname "$0")"
 
-curl -fsS -X POST "$KIBANA_URL/api/data_views/data_view" \
-  -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
-  -d '{"override": true, "data_view": {"id": "zombie-vocab-logs", "name": "Zombie Vocab API logs", "title": "filebeat-*", "timeFieldName": "@timestamp"}}' \
-  > /dev/null
-echo "data view: zombie-vocab-logs"
-
 for f in "$DIR"/*.ndjson; do
   [ -e "$f" ] || continue
-  curl -fsS -X POST "$KIBANA_URL/api/saved_objects/_import?overwrite=true" \
-    -H 'kbn-xsrf: true' --form file=@"$f" > /dev/null
-  echo "imported: $(basename "$f")"
+  # The import API answers 200 even when objects fail; check the body.
+  result=$(curl -fsS -X POST "$KIBANA_URL/api/saved_objects/_import?overwrite=true" \
+    -H 'kbn-xsrf: true' --form file=@"$f")
+  case "$result" in
+    *'"success":true'*) echo "imported: $(basename "$f")" ;;
+    *) echo "import failed: $(basename "$f"): $result" >&2; exit 1 ;;
+  esac
 done

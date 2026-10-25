@@ -2,6 +2,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: zombie-vocab-api
+  labels:
+    # The ServiceMonitor (k8s/monitoring) selects on this.
+    app.kubernetes.io/name: zombie-vocab-api
 spec:
   selector:
     app.kubernetes.io/name: zombie-vocab-api

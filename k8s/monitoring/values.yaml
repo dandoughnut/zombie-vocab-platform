@@ -1,0 +1,73 @@
+# kube-prometheus-stack (Prometheus Operator, Prometheus, Alertmanager,
+# Grafana, kube-state-metrics, node-exporter), sized for kind. Installed by
+# `make monitoring` (Helm) or by Argo CD (argocd/apps/monitoring.yaml); both
+# read this file.
+
+# kind runs etcd, the scheduler, and the controller manager on loopback
+# inside the control-plane container, so scraping them only ever produces
+# false "TargetDown" alerts. Managed clusters (GKE) hide them entirely.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors / PrometheusRules from every namespace, not
+    # only ones labelled for this Helm release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    retention: 2d
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+  # Same severity routing as the Compose Alertmanager.
+  config:
+    route:
+      receiver: dashboard-only
+      group_by: [alertname, provider]
+      routes:
+        - matchers: ['severity="page"']
+          receiver: on-call
+        - matchers: ['severity="ticket"']
+          receiver: ticket-queue
+    receivers:
+      - name: dashboard-only
+      - name: on-call
+      - name: ticket-queue
+
+grafana:
+  adminPassword: admin
+  sidecar:
+    dashboards:
+      # ConfigMaps with this label (k8s/monitoring) become dashboards.
+      label: grafana_dashboard
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi

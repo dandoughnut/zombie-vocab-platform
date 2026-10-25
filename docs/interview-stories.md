@@ -125,3 +125,93 @@ validate, ansible-lint, and compose config. The e2e job builds a 3-node kind
 cluster per PR, deploys, migrates, curls through the Service, and runs a
 CronJob on demand. The backend repo tests, builds, pushes to GHCR, then commits
 the new tag here: CI never holds cluster credentials, so Argo CD pulls.
+
+---
+
+## 9. "Billing was silent" (audit logging at the right layer)
+
+**Situation.** Four billing providers, about twenty early exits (bad
+signature, unlinked account, duplicate, stale delivery, provider not
+configured), and **one** log line in the whole module. "I paid but I'm not
+Pro" meant reading database rows by hand.
+
+**What I did.** A custom FastAPI `APIRoute` class wraps every webhook
+handler. Each delivery ends in exactly one structured log line and one counter
+tick, whichever exit it took: `applied`, `duplicate`, `stale`,
+`coins_credited`, `refunded`, `ignored`, `rejected` (4xx), `unavailable` (5xx)
+or `error`. Handlers only *declare* what they decided (`set_billing_outcome`)
+at the point of decision, so none of the existing branches changed.
+
+**Talking point.** I put it in one place on purpose: logging added branch by
+branch is the logging that gets forgotten on the next branch.
+
+## 10. "Metrics that won't melt Prometheus" (cardinality)
+
+`/metrics` labels are route **templates** and closed enums (provider,
+outcome), never user IDs or raw paths. One label value per user is one time
+series per user. The endpoint is bearer-token gated and returns **404 when no
+token is configured** (fail closed), because request rates and billing
+outcomes are business data on a public API. Short-lived CronJob processes exit
+before any scrape, so I monitor them through kube-state-metrics plus their log
+line instead of adding a Pushgateway.
+
+## 11. "Alerts are code, so they have tests" (SLOs, burn rates, promtool)
+
+- **SLO:** 99.5% non-5xx over 30 days. Two multi-window burn-rate alerts
+  (Google SRE workbook): 14.4× → **page**, 6× → **ticket**. A blip doesn't
+  page; a real outage does within minutes.
+- **One source of truth:** rules live in the Kubernetes `PrometheusRule`. A
+  script renders them for the Compose Prometheus, and CI fails on drift.
+- **Unit tests:** `promtool test rules` replays synthetic series. A 10% error
+  rate pages. 0.2% stays quiet. A rotated Apple secret pages with the exact
+  message "APPLE webhooks: 15 rejected in 15m". A reconcile that last succeeded
+  30 h ago trips the dead man's switch. No targets at all trips `absent()`
+  (`up == 0` can't fire when there's nothing to evaluate).
+- **Routing:** Alertmanager sends page to on-call, ticket to a daily queue, and
+  info to the dashboard. An inhibit rule mutes the downstream alerts while
+  "API down" is firing.
+
+## 12. "Logs without personal data" (Logstash)
+
+Filebeat stays a thin shipper; Logstash does what an edge agent shouldn't own:
+- **Pseudonymises** the billing user ID with a keyed SHA-256. Support can
+  still follow one account's deliveries, but the index can't be joined back
+  to a person without the key.
+- **Drops health-check lines**, which are most of the volume and none of the
+  value. Their metrics still reach Prometheus.
+- **Routes into a data stream** with 14-day retention enforced by
+  Elasticsearch.
+
+A second pipeline polls feedback from Postgres over **JDBC**, incrementally on
+`created_at`, and **redacts email addresses** before indexing. It never
+selects `user_id`. I tested the SQL and the redaction regex against real
+Postgres.
+
+**Bug I caught:** Logstash only honours `\"` inside config strings when
+`config.support_escapes` is on, and it's off by default, so the SQL moved to
+its own file.
+
+## 13. "Product metrics with least privilege" (Postgres + Grafana)
+
+The database already knew how many users we have; it just needed asking
+safely. A migration adds a `zombie_vocab_metrics` schema of aggregate
+**views**: DAU/WAU, signups, D1/D7 retention, the funnel, subscriptions
+(sandbox excluded). The Grafana role can read those views and nothing else.
+Views run with their owner's rights, so they can aggregate tables the role
+can't see. Sessions are read-only with a 15 s statement timeout. I verified it
+on Postgres 16: per-user schema → "permission denied", public tables → denied,
+writes → "read-only transaction".
+
+**Bug I caught:** after a migration downgrade/upgrade cycle every product
+panel went blank. `DROP SCHEMA … CASCADE` drops the grants too. The migration
+now re-grants whenever the role exists. I found it by running every
+dashboard query *as the dashboard's role*, not as a superuser.
+
+## 14. "SQLite hid a foreign-key bug" (test on the real engine)
+
+The demo seeder passed on SQLite and failed on Postgres: the models declare no
+ORM relationships, so SQLAlchemy didn't order the inserts, and `events` went in
+before their `profiles`. SQLite doesn't enforce foreign keys by default, so it
+never complained. The fix is a flush per profile. The lesson: integration-test
+against the engine you run, which I did with an embedded Postgres 16 and no
+Docker.

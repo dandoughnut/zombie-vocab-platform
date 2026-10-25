@@ -20,13 +20,17 @@ jobs:
             | sudo tar -xz -C /usr/local/bin kubeconform
       - name: Render every overlay and validate against the Kubernetes + CRD schemas
         run: |
-          for o in k8s/overlays/kind k8s/overlays/gke k8s/observability; do
+          for o in k8s/overlays/kind k8s/overlays/gke k8s/observability k8s/monitoring; do
             echo "::group::$o"
             kubectl kustomize "$o" | kubeconform -strict -summary -ignore-missing-schemas \
               -schema-location default \
               -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
             echo "::endgroup::"
           done
+          kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            argocd/root.yaml argocd/apps/*.yaml
 
   terraform:
     runs-on: ubuntu-latest
@@ -57,6 +61,46 @@ jobs:
           ansible-galaxy collection install -r requirements.yml
           ansible-playbook site.yml --syntax-check -i inventory.example.ini
           ansible-lint site.yml
+
+  observability:
+    runs-on: ubuntu-latest
+    env:
+      PROMETHEUS_VERSION: 3.15.1
+      ALERTMANAGER_VERSION: 0.34.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install promtool and amtool
+        run: |
+          curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin --strip-components=1 "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          curl -fsSL "https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin --strip-components=1 "alertmanager-${ALERTMANAGER_VERSION}.linux-amd64/amtool"
+      - name: Compose rules are rendered from the PrometheusRule (no drift)
+        run: pip install pyyaml && python scripts/render-rules.py --check
+      - name: Rules parse, and the alert unit tests pass
+        run: |
+          promtool check rules observability/prometheus/rules.generated.yml
+          cd observability/prometheus && promtool test rules rules.test.yml
+      - name: Prometheus config (with its files where the container expects them)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/observability/prometheus/rules.generated.yml:/etc/prometheus/rules.generated.yml:ro" \
+            -v "$PWD/observability/prometheus/metrics-token:/etc/prometheus/metrics-token:ro" \
+            prom/prometheus:v${PROMETHEUS_VERSION} check config /etc/prometheus/prometheus.yml
+      - run: amtool check-config observability/alertmanager/alertmanager.yml
+      - name: Logstash pipelines compile
+        run: |
+          docker build -q -t zv-logstash observability/logstash
+          docker run --rm \
+            -e ELASTICSEARCH_URL=http://localhost:9200 -e PSEUDONYM_KEY=ci \
+            -e FEEDBACK_JDBC_URL=jdbc:postgresql://localhost/ci -e FEEDBACK_DB_USER=ci -e FEEDBACK_DB_PASSWORD=ci \
+            zv-logstash logstash --config.test_and_exit
+      - name: Dashboards and saved objects are valid JSON
+        run: |
+          for f in k8s/monitoring/dashboards/*.json; do python -m json.tool "$f" > /dev/null; done
+          python -c "import json, sys; [json.loads(l) for l in open(sys.argv[1])]" observability/kibana/zombie-vocab.ndjson
+          for f in observability/elasticsearch/setup.sh observability/kibana/setup.sh; do sh -n "$f"; done
 
   compose:
     runs-on: ubuntu-latest

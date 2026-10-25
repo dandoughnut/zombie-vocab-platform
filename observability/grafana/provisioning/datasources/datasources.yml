@@ -1,0 +1,36 @@
+# One Grafana over three sources: metrics (Prometheus), logs (Elasticsearch),
+# and product aggregates (Postgres, as the read-only metrics_reader role that
+# can see the zombie_vocab_metrics views and nothing else).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Elasticsearch logs
+    uid: elasticsearch
+    type: elasticsearch
+    url: http://elasticsearch:9200
+    jsonData:
+      index: logs-zombievocab.api-*
+      timeField: "@timestamp"
+      logMessageField: message
+      logLevelField: log.level
+
+  - name: Product DB (read-only)
+    uid: product-db
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: metrics_reader
+    secureJsonData:
+      password: metrics
+    jsonData:
+      database: zombie
+      sslmode: disable
+      postgresVersion: 1600
+      maxOpenConns: 2

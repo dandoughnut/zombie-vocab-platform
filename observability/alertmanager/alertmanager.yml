@@ -1,0 +1,29 @@
+# Routing by severity, the part that matters in an interview:
+#   page   → wake someone (here: a webhook stand-in for PagerDuty/Opsgenie)
+#   ticket → batch into a daily queue, never at night
+#   info   → dashboard only
+# Locally every receiver is a no-op; the Alertmanager UI (:9093) shows what
+# would have been sent, and where.
+route:
+  receiver: dashboard-only
+  group_by: [alertname, provider]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="page"']
+      receiver: on-call
+      repeat_interval: 1h
+    - matchers: ['severity="ticket"']
+      receiver: ticket-queue
+      repeat_interval: 24h
+
+# A page for the API being down makes its other alerts noise.
+inhibit_rules:
+  - source_matchers: ['alertname=~"ZombieVocabApi(Down|Absent)"']
+    target_matchers: ['alertname=~"ZombieVocab(ErrorBudget.*|SlowEndpoint)"']
+
+receivers:
+  - name: dashboard-only
+  - name: on-call
+  - name: ticket-queue

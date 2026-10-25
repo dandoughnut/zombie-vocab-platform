@@ -1,0 +1,94 @@
+# Unit tests for the alert rules: `promtool test rules rules.test.yml`.
+# Each test replays synthetic series and asserts exactly which alerts fire.
+rule_files:
+  - rules.generated.yml
+
+evaluation_interval: 30s
+
+tests:
+  # 10% of requests fail for an hour: far past 14.4x burn → page.
+  - name: fast error-budget burn pages
+    interval: 30s
+    input_series:
+      - series: 'zv_http_requests_total{job="zombie-vocab-api",method="GET",route="/v1/me/state",status="200"}'
+        values: '0+90x150'
+      - series: 'zv_http_requests_total{job="zombie-vocab-api",method="GET",route="/v1/me/state",status="500"}'
+        values: '0+10x150'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: ZombieVocabErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: API is burning its error budget 14x too fast
+              description: "5xx ratio is 10% over the last hour (SLO allows 0.5%)."
+
+  # 0.2% errors is inside the budget: nothing fires.
+  - name: errors within budget stay quiet
+    interval: 30s
+    input_series:
+      - series: 'zv_http_requests_total{job="zombie-vocab-api",method="GET",route="/v1/me/state",status="200"}'
+        values: '0+998x800'
+      - series: 'zv_http_requests_total{job="zombie-vocab-api",method="GET",route="/v1/me/state",status="500"}'
+        values: '0+2x800'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: ZombieVocabErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 6h
+        alertname: ZombieVocabErrorBudgetSlowBurn
+        exp_alerts: []
+
+  # A rotated App Store secret: every Apple delivery rejected.
+  - name: rejected billing webhooks page
+    interval: 1m
+    input_series:
+      - series: 'zv_billing_webhooks_total{job="zombie-vocab-api",provider="APPLE",outcome="rejected"}'
+        values: '0+1x20'
+      - series: 'zv_billing_webhooks_total{job="zombie-vocab-api",provider="GOOGLE",outcome="applied"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ZombieVocabBillingWebhooksFailing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              provider: APPLE
+              outcome: rejected
+            exp_annotations:
+              summary: "APPLE webhooks: 15 rejected in 15m"
+              description: Paying users may not be receiving Pro. Check the billing logs by http.request.id in Kibana.
+
+  # The reconcile CronJob last succeeded 30 hours ago.
+  - name: stale reconcile is caught by the dead man's switch
+    interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="zombie-vocab",cronjob="zombie-vocab-reconcile"}'
+        values: '-108000x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ZombieVocabReconcileStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: zombie-vocab
+              cronjob: zombie-vocab-reconcile
+            exp_annotations:
+              summary: Billing reconcile has not succeeded in over 26 hours
+
+  # Every API pod gone: `up == 0` has nothing to evaluate, `absent` catches it.
+  - name: no targets at all
+    interval: 1m
+    input_series:
+      - series: 'up{job="prometheus"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ZombieVocabApiAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              job: zombie-vocab-api
+            exp_annotations:
+              summary: No API targets exist to scrape

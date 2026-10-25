@@ -1,0 +1,37 @@
+# App-specific monitoring on top of kube-prometheus-stack: what to scrape,
+# what to alert on, and the dashboards. Needs the stack's CRDs first
+# (`make monitoring` installs the chart, then applies this).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - servicemonitor.yaml
+  - prometheus-rule.yaml
+
+# Local-only scrape token (kind); must equal METRICS_TOKEN in the app's
+# Secret (k8s/overlays/kind). Real environments source both from the secret
+# store. No hash suffix: the ServiceMonitor names it, and kustomize can't
+# rewrite references inside a CRD.
+secretGenerator:
+  - name: zombie-vocab-metrics-scrape
+    namespace: zombie-vocab
+    literals:
+      - token=local-metrics-token
+    options:
+      disableNameSuffixHash: true
+
+# Same JSON files the Compose Grafana provisions. The Kubernetes Grafana has
+# no Postgres or Elasticsearch data source wired up, so only the
+# Prometheus-backed dashboard ships here; the cluster dashboards that come
+# with kube-prometheus-stack cover the rest.
+configMapGenerator:
+  - name: zombie-vocab-dashboard-api-red
+    namespace: monitoring
+    files:
+      - dashboards/api-red.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: Zombie Vocab
