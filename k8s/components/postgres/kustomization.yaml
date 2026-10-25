@@ -1,0 +1,42 @@
+# In-cluster Postgres for the local (kind) and CI clusters only. Real
+# environments point DATABASE_URL at Supabase/Cloud SQL and leave this out.
+#
+# With an external database the migrate Job is an Argo CD PreSync hook. But
+# PreSync runs before every sync wave, so with an in-cluster database it would
+# run before Postgres exists. This component re-orders the release instead:
+#   wave -1  config, secret, Postgres
+#   wave  0  migrate Job (Sync hook: waits for wave -1 to be healthy)
+#   wave  1  API Deployment and CronJobs
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - postgres.yaml
+
+patches:
+  - target:
+      kind: Job
+      name: zombie-vocab-migrate
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Sync
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "0"
+  - target:
+      kind: ConfigMap
+      name: zombie-vocab-api-config
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          argocd.argoproj.io/sync-wave: "-1"
+  - target:
+      kind: (Deployment|CronJob)
+      name: zombie-vocab-.*
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          argocd.argoproj.io/sync-wave: "1"

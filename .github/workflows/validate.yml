@@ -1,0 +1,65 @@
+# Static checks on every push/PR. Public repo → GitHub Actions minutes are free.
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  kubernetes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+      - name: Render every overlay and validate against the Kubernetes + CRD schemas
+        run: |
+          for o in k8s/overlays/kind k8s/overlays/gke k8s/observability; do
+            echo "::group::$o"
+            kubectl kustomize "$o" | kubeconform -strict -summary -ignore-missing-schemas \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done
+
+  terraform:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env: [gcp-demo, aws-ci]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.0
+      - run: terraform fmt -check -recursive terraform
+      - working-directory: terraform/envs/${{ matrix.env }}
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ansible ansible-lint
+      - working-directory: ansible
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+          ansible-playbook site.yml --syntax-check -i inventory.example.ini
+          ansible-lint site.yml
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: BACKEND_DIR=. docker compose config --quiet

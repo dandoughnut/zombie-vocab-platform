@@ -1,0 +1,32 @@
+# Single node sized for a laptop. A real cluster would run 3 master-eligible
+# nodes across zones; the nodeSets list is where that changes.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: logs
+spec:
+  version: 9.5.5
+  nodeSets:
+    - name: default
+      count: 1
+      config:
+        # kind nodes don't raise vm.max_map_count; mmap off avoids needing it.
+        node.store.allow_mmap: false
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 1Gi
+                limits:
+                  memory: 1536Mi
+      volumeClaimTemplates:
+        - metadata:
+            name: elasticsearch-data
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 5Gi

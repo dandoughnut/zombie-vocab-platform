@@ -1,0 +1,37 @@
+# Ships the API's JSON log lines from Docker into Elasticsearch.
+# Only the app's own containers (zv-api, zv-migrate, zv-cron-*) are collected,
+# so Elasticsearch and Kibana don't index their own chatter.
+
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      templates:
+        - condition:
+            regexp:
+              docker.container.name: "^zv-(api|migrate|cron-.*)$"
+          config:
+            - type: filestream
+              id: docker-${data.docker.container.id}
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*-json.log
+              parsers:
+                - container: ~
+              prospector.scanner.symlinks: true
+
+processors:
+  # The app writes one ECS-style JSON object per line (app/logging_config.py);
+  # lift its keys to the top level so http.route, event.duration_ms, etc. are
+  # real fields, not text inside `message`.
+  - decode_json_fields:
+      fields: ["message"]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+      expand_keys: true
+  - add_docker_metadata: ~
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+
+setup.kibana:
+  host: "http://kibana:5601"

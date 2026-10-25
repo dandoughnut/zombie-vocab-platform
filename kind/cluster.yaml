@@ -1,0 +1,9 @@
+# One control plane + two workers: enough for the topology spread and the
+# PodDisruptionBudget to mean something during `kubectl drain` demos.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: zombie-vocab
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

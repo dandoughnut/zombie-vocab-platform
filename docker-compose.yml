@@ -1,0 +1,152 @@
+# Local platform: the real Zombie Vocab API on plain Postgres, with its logs
+# shipped to a single-node Elastic Stack. Nothing here runs in the cloud.
+#
+#   make up        # api + postgres + elasticsearch + kibana + filebeat
+#   make load      # generate traffic so Kibana has something to show
+#   open http://localhost:5601
+#
+# Security is disabled on Elasticsearch/Kibana because this stack only ever
+# binds to localhost. The Kubernetes path (k8s/observability) uses ECK, which
+# turns TLS and auth on by default.
+
+name: zombie-vocab-platform
+
+x-api: &api
+  build:
+    context: ${BACKEND_DIR:-../zombie_vocab_backend}
+  image: zombie-vocab-api:dev
+  environment:
+    APP_ENV: local
+    LOG_FORMAT: json
+    DATABASE_URL: postgresql+asyncpg://zombie:zombie@postgres:5432/zombie
+    # Multi-replica posture even locally: sweeps run as one-shot jobs (below),
+    # not inside the web process.
+    RUN_BACKGROUND_LOOPS: "false"
+    SUPABASE_URL: ${SUPABASE_URL:-}
+    SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zombie
+      POSTGRES_PASSWORD: zombie
+      POSTGRES_DB: zombie
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zombie -d zombie"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One migrator, run to completion before any API container starts — the
+  # same contract the Kubernetes migrate Job enforces.
+  migrate:
+    <<: *api
+    container_name: zv-migrate
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *api
+    container_name: zv-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The CronJob equivalents, runnable on demand: `make sweep`.
+  reconcile:
+    <<: *api
+    container_name: zv-cron-reconcile
+    command: ["python", "scripts/reconcile.py"]
+    restart: "no"
+    profiles: ["sweep"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  prune-events:
+    <<: *api
+    container_name: zv-cron-prune
+    command: ["python", "scripts/prune_events.py"]
+    restart: "no"
+    profiles: ["sweep"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-9.5.5}
+    container_name: zv-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "127.0.0.1:9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-9.5.5}
+    container_name: zv-kibana
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:5601/api/status | grep -q available"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  # Creates the data view and imports any committed dashboards (dashboards as code).
+  kibana-setup:
+    image: curlimages/curl:8.11.1
+    container_name: zv-kibana-setup
+    restart: "no"
+    volumes:
+      - ./observability/kibana:/kibana:ro
+    entrypoint: ["sh", "/kibana/setup.sh"]
+    environment:
+      KIBANA_URL: http://kibana:5601
+    depends_on:
+      kibana:
+        condition: service_healthy
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:${ELASTIC_VERSION:-9.5.5}
+    container_name: zv-filebeat
+    restart: unless-stopped
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./observability/compose/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  esdata:

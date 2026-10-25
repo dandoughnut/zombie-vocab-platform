@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: zombie-vocab
+    includeSelectors: false
+
+resources:
+  - migrate-job.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - cronjobs.yaml
+
+# Non-secret runtime config. Secrets (DATABASE_URL, Supabase and billing keys)
+# come from the `zombie-vocab-api-secrets` Secret, which each overlay provides.
+# Generated (hash-suffixed) so a config change rolls the pods.
+configMapGenerator:
+  - name: zombie-vocab-api-config
+    literals:
+      - APP_ENV=prod
+      - LOG_FORMAT=json
+      - LOG_LEVEL=INFO
+      # Several replicas: the sweeps run once, as CronJobs, not once per pod.
+      - RUN_BACKGROUND_LOOPS=false
+      - EVENTS_RETENTION_DAYS=365
+      - CORS_ORIGINS=*
+
+# Overlays pin the tag; CI's GitOps step rewrites it (`kustomize edit set image`).
+images:
+  - name: zombie-vocab-api
+    newName: zombie-vocab-api
+    newTag: dev

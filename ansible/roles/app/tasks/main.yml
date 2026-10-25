@@ -1,0 +1,61 @@
+- name: Create the app directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0755"
+
+- name: Sync the backend source
+  ansible.posix.synchronize:
+    src: "{{ backend_src }}"
+    dest: "{{ app_dir }}/backend/"
+    delete: true
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.venv"
+      - "--exclude=.env*"
+      - "--exclude=__pycache__"
+  register: app_backend_sync
+
+- name: Sync the compose stack
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../{{ item }}"
+    dest: "{{ app_dir }}/platform/"
+  loop:
+    - docker-compose.yml
+    - observability
+  register: app_platform_sync
+
+- name: Write the compose env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ app_dir }}/platform/.env"
+    owner: "{{ deploy_user }}"
+    mode: "0600"
+  register: app_env_file
+
+- name: Fix ownership after sync
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    recurse: true
+  changed_when: false
+
+- name: Build and start the stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --build
+    chdir: "{{ app_dir }}/platform"
+  become: true
+  become_user: "{{ deploy_user }}"
+  when: app_backend_sync.changed or app_platform_sync.changed or app_env_file.changed
+  changed_when: true
+
+- name: API answers its health check
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8000/v1/health
+  register: app_health
+  retries: 60
+  delay: 3
+  until: app_health.status == 200

@@ -1,0 +1,9 @@
+deploy_user: deploy
+app_dir: /opt/zombie-vocab
+# Local checkout of the backend, copied to the host and built there.
+backend_src: "{{ playbook_dir }}/../../zombie_vocab_backend/"
+# Ports reachable from outside the VM. Kibana/Elasticsearch stay on loopback
+# (compose binds them to 127.0.0.1); reach them with an SSH tunnel.
+ufw_allowed_tcp:
+  - "22"
+  - "8000"

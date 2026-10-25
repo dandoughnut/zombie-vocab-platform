@@ -1,0 +1,66 @@
+# A real 3-node Kubernetes cluster per PR, on a free runner: build the API,
+# deploy the kind overlay, run migrations, hit the service, then exercise a
+# CronJob on demand. Needs BACKEND_REPO_TOKEN (read access to the private
+# backend repo); without it the job explains why and skips.
+name: e2e (kind)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BACKEND_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
+    steps:
+      - name: Skip without backend access
+        if: env.BACKEND_TOKEN == ''
+        run: echo "BACKEND_REPO_TOKEN not set; skipping e2e"
+
+      - uses: actions/checkout@v4
+        if: env.BACKEND_TOKEN != ''
+      - uses: actions/checkout@v4
+        if: env.BACKEND_TOKEN != ''
+        with:
+          repository: dandoughnut/zombie_vocab_backend
+          token: ${{ env.BACKEND_TOKEN }}
+          path: backend
+
+      - uses: helm/kind-action@v1
+        if: env.BACKEND_TOKEN != ''
+        with:
+          version: v0.33.0
+          config: kind/cluster.yaml
+          cluster_name: zombie-vocab
+
+      - name: Build and deploy
+        if: env.BACKEND_TOKEN != ''
+        run: make deploy BACKEND_DIR=backend
+
+      - name: Smoke test through the Service
+        if: env.BACKEND_TOKEN != ''
+        run: |
+          kubectl -n zombie-vocab port-forward svc/zombie-vocab-api 8000:80 &
+          for i in $(seq 30); do curl -fs localhost:8000/v1/health && break; sleep 1; done
+          curl -fs localhost:8000/v1/content/version
+          curl -fs "localhost:8000/v1/leaderboards/public/xp?limit=5"
+
+      - name: Run the prune CronJob once
+        if: env.BACKEND_TOKEN != ''
+        run: |
+          kubectl -n zombie-vocab create job prune-e2e --from=cronjob/zombie-vocab-prune-events
+          kubectl -n zombie-vocab wait --for=condition=complete job/prune-e2e --timeout=120s
+          kubectl -n zombie-vocab logs job/prune-e2e
+
+      - name: Logs on failure
+        if: failure() && env.BACKEND_TOKEN != ''
+        run: |
+          kubectl -n zombie-vocab get all
+          kubectl -n zombie-vocab describe pods | tail -80
+          kubectl -n zombie-vocab logs -l app.kubernetes.io/name=zombie-vocab-api --tail=100 || true
+          kubectl -n zombie-vocab logs job/zombie-vocab-migrate --tail=100 || true

@@ -1,0 +1,6 @@
+# Remote state for a shared environment: change `backend "local" {}` in
+# main.tf to `backend "gcs" {}`, then
+#   terraform init -backend-config=backend.hcl
+# GCS state locking is built in.
+bucket = "your-tf-state-bucket"
+prefix = "zombie-vocab/gcp-demo"

@@ -1,0 +1,14 @@
+# Provision a fresh Ubuntu 24.04 host into a hardened Docker host running the
+# platform's compose stack. Target is a local Multipass VM (free):
+#
+#   make vm                     # multipass launch + inventory.ini
+#   make provision              # this playbook
+#
+# Idempotent: a second run reports zero changes.
+- name: Zombie Vocab host
+  hosts: zombie_vocab
+  become: true
+  roles:
+    - base
+    - docker
+    - app

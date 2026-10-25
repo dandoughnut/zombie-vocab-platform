@@ -1,0 +1,15 @@
+# Elastic Stack on Kubernetes, managed by ECK (Elastic Cloud on Kubernetes).
+# Install the operator first: `make eck` (CRDs + operator, pinned version).
+# ECK provisions TLS, the `elastic` superuser, and Beat→Elasticsearch
+# credentials itself; none of that is hand-written here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: observability
+
+resources:
+  - namespace.yaml
+  - elasticsearch.yaml
+  - kibana.yaml
+  - filebeat-rbac.yaml
+  - filebeat.yaml

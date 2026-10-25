@@ -1,0 +1,17 @@
+.env
+*.secret.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+.terraform.tfstate.lock.info
+
+# Ansible
+ansible/inventory.ini
+*.retry
+
+.DS_Store

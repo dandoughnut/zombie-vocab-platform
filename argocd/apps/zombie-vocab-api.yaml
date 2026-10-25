@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zombie-vocab-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/dandoughnut/zombie-vocab-platform.git
+    targetRevision: main
+    path: k8s/overlays/kind
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: zombie-vocab
+  syncPolicy:
+    automated:
+      prune: true
+      # Someone `kubectl edit`s the Deployment → Argo reverts it to git.
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
+  # The HPA owns replica count; don't fight it on every sync.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: zombie-vocab-api
+      jsonPointers:
+        - /spec/replicas

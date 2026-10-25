@@ -1,0 +1,28 @@
+# GKE Autopilot (terraform/envs/gcp-demo). Ephemeral by design: apply, demo,
+# destroy. The database stays external (Supabase), so the migrate Job keeps its
+# PreSync hook from base.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: zombie-vocab
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - external-secret.yaml
+  - gateway.yaml
+
+patches:
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: zombie-vocab-api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+
+images:
+  - name: zombie-vocab-api
+    # Artifact Registry repo created by terraform/envs/gcp-demo.
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/zombie-vocab/zombie-vocab-api
+    newTag: main

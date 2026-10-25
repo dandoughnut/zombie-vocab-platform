@@ -1,0 +1,33 @@
+# Local cluster (kind) and the CI e2e cluster. Free: runs in Docker on a laptop
+# or a GitHub Actions runner.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: zombie-vocab
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+components:
+  - ../../components/postgres
+
+# Local-only credentials for the in-cluster Postgres; nothing real lives here.
+secretGenerator:
+  - name: zombie-vocab-api-secrets
+    literals:
+      - DATABASE_URL=postgresql+asyncpg://zombie:zombie@postgres:5432/zombie
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-1"
+
+configMapGenerator:
+  - name: zombie-vocab-api-config
+    behavior: merge
+    literals:
+      - APP_ENV=local
+
+images:
+  - name: zombie-vocab-api
+    newName: zombie-vocab-api
+    newTag: dev

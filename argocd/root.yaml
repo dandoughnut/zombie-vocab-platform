@@ -1,0 +1,20 @@
+# App of apps: Argo CD watches argocd/apps/ and creates one Application per
+# file. Apply this once (`make argocd`); everything after is a git commit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/dandoughnut/zombie-vocab-platform.git
+    targetRevision: main
+    path: argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
